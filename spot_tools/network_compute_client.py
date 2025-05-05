@@ -50,6 +50,9 @@ class InferenceResult:
     annotated_image: np.ndarray
     objects: list[InferenceObject]
 
+    def found_label(self, label: str) -> bool:
+        return any(obj.name == label for obj in self.objects)
+
 
 def _annotate_image(image: np.ndarray, label: str, confidence: float, bounding_box: BoundingBox) -> np.ndarray:
     # draw bounding box
