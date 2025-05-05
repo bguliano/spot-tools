@@ -1,14 +1,17 @@
+import json
 import threading
+import uuid
+from pathlib import Path
 from typing import TypeVar, Type
 
-from bosdyn.client import BaseClient, Robot
+from bosdyn.client import create_standard_sdk, BaseClient
 
 T = TypeVar('T', bound=BaseClient)
 
 
-class RobotClients:
-    def __init__(self, robot: Robot):
-        self._robot = robot
+class SpotClients[T]:
+    def __init__(self, spot: 'Spot'):
+        self._robot = spot.robot
         self._clients: dict[str, T] = {}
         self._lock = threading.Lock()  # make sure this object is thread-safe
         self.always_print_clients = True
@@ -50,3 +53,16 @@ class RobotClients:
         for client_name, client in self._clients.items():
             print(f'\tName: "{client_name}" Type: {type(client)}')
         print()
+
+
+class Spot:
+    def __init__(self, authentication_file: str | Path, ip: str = '192.168.80.3', client_name: str | None = None):
+        self.sdk = create_standard_sdk(client_name or str(uuid.uuid4()))
+        self.robot = self.sdk.create_robot(ip)
+
+        authentication = json.loads(Path(authentication_file).read_bytes())
+        self.robot.authenticate(authentication['username'], authentication['password'])
+
+        self.robot.time_sync.wait_for_sync()
+
+        self.clients = SpotClients(self)
