@@ -5,7 +5,9 @@ from typing import Self
 
 import cv2
 import numpy as np
-from bosdyn.api.geometry_pb2 import Polygon
+from bosdyn.api.geometry_pb2 import Polygon, SE2VelocityLimit
+from bosdyn.client.math_helpers import SE2Velocity
+from bosdyn.client.robot_command import RobotCommandBuilder
 
 
 # ---- Dataclasses -------------------------------------------------------------------------------
@@ -116,5 +118,13 @@ def rotate_bd_image_advanced(image: np.ndarray, image_source_name: str) -> np.nd
 def pose_dist(pose1, pose2) -> float:
     diff_vec = [pose1.x - pose2.x, pose1.y - pose2.y, pose1.z - pose2.z]
     return float(np.linalg.norm(diff_vec))
+
+
+def get_walking_params(max_linear_vel: float, max_rotation_vel: float):
+    max_vel_se2 = SE2Velocity(x=max_linear_vel, y=max_linear_vel, angular=max_rotation_vel)
+    vel_limit = SE2VelocityLimit(max_vel=max_vel_se2)
+    params = RobotCommandBuilder.mobility_params()
+    params.vel_limit.CopyFrom(vel_limit)
+    return params
 
 # ------------------------------------------------------------------------------------------------
