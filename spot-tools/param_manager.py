@@ -5,7 +5,6 @@ from typing import Optional, Union, Iterable, Type, Dict, Any
 from bosdyn.api import service_customization_pb2
 from bosdyn.api.units_pb2 import Units
 from bosdyn.client.service_customization_helpers import validate_dict_spec, InvalidCustomParamSpecError
-# noinspection PyUnresolvedReferences
 from google.protobuf.wrappers_pb2 import Int64Value, BoolValue
 
 
