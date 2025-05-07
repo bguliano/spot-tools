@@ -68,13 +68,9 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         print('Started NetworkComputeBridgeWorker gRPC server.')
         atexit.register(self.shutdown)
 
-        # transform models_path if necessary
-        if isinstance(models_path, str):
-            models_path = Path(models_path)
-
         # first, locate all pt files in models_path
         detected_models = [
-            model_path for model_path in models_path.iterdir()
+            model_path for model_path in Path(models_path).iterdir()
             if model_path.suffix == '.pt'
         ]
 
