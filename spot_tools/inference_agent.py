@@ -8,10 +8,12 @@ from spot_tools.spot import Spot
 
 # wrapper for combining a server and client in one application
 class InferenceAgent:
-    def __init__(self, spot: Spot, registration: DirectoryServiceRegistration, models_path: str | Path):
+    def __init__(self, spot: Spot, registration: DirectoryServiceRegistration, models_path: str | Path, enable_cv2_window: bool):
         self._server = NetworkComputeServer(spot, registration, models_path)
         self._server.wait_for_initial_connection()
         self._client = NetworkComputeClient(spot, registration.name)
+        if enable_cv2_window:
+            self._client.enable_showing_annotated_images(registration.name)
 
     def perform_inspection(self, model_name: str, image_source: SpotImageSource, color_image: bool = True,
                            image_quality: int = 100, whitelist_labels: list[str] | None = None) -> InferenceResult:
