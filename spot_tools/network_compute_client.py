@@ -1,10 +1,9 @@
 import time
 from dataclasses import dataclass
-from typing import Generator
 
 import cv2
 import numpy as np
-from bosdyn.api.image_pb2 import ImageRequest, Image
+from bosdyn.api.image_pb2 import ImageRequest, Image, ImageResponse
 from bosdyn.api.network_compute_bridge_pb2 import ImageSourceAndService, NetworkComputeInputData, \
     NetworkComputeServerConfiguration, NetworkComputeRequest
 from bosdyn.client import frame_helpers
@@ -14,8 +13,8 @@ from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClie
 from bosdyn.client.robot_state import RobotStateClient
 from google.protobuf.wrappers_pb2 import StringValue, FloatValue
 
-from common import BoundingBox, SpotImageSource, rotate_bd_image, pose_dist
-from spot import Spot
+from spot_tools.common import BoundingBox, SpotImageSource, rotate_bd_image, pose_dist
+from spot_tools.spot import Spot
 
 
 class CannotFindServiceError(Exception):
@@ -37,6 +36,7 @@ class InferenceObject:
     name: str
     confidence: float
     bounding_box: BoundingBox
+    image_response: ImageResponse  # for more fine-grained information
 
     # sometimes these cannot be determined by Spot
     vision_tform_obj: SE3Pose | None
@@ -51,10 +51,23 @@ class InferenceResult:
     objects: list[InferenceObject]
 
     def get_first(self, label: str) -> InferenceObject | None:
-        for obj in self.objects:
-            if obj.name == label:
-                return obj
-        return None
+        return next((obj for obj in self.objects if obj.name == label), None)
+
+    def get_closest(self, label: str) -> InferenceObject | None:
+        matching = (obj for obj in self.objects if obj.name == label)
+        return min(matching, key=lambda obj: obj.distance, default=None)
+
+
+@dataclass
+class InferenceResultCollection:
+    results: list[InferenceResult]
+
+    def get_first(self, label: str) -> InferenceObject | None:
+        return next((result.get_first(label) for result in self.results), None)
+
+    def get_closest(self, label: str) -> InferenceObject | None:
+        initial = (result.get_closest(label) for result in self.results)
+        return min(initial, key=lambda obj: obj.distance, default=None)
 
 
 def _annotate_image(image: np.ndarray, label: str, confidence: float, bounding_box: BoundingBox) -> np.ndarray:
@@ -85,6 +98,21 @@ class NetworkComputeClient:
             _ = self.get_models()
         except ExternalServerError:
             raise CannotConnectToServerError(f'Cannot connect to {self.service_name}. Please try again.')
+
+        # for showing annotated images
+        self._cv2_window_name: str | None = None
+
+    def enable_showing_annotated_images(self, window_name: str) -> None:
+        self._cv2_window_name = window_name
+        cv2.namedWindow(self._cv2_window_name)
+        cv2.waitKey(500)
+
+    def disable_showing_annotated_images(self) -> None:
+        if self._cv2_window_name is None:
+            return
+
+        cv2.destroyWindow(self._cv2_window_name)
+        self._cv2_window_name = None
 
     def get_all_servers(self) -> list[str]:
         directory_client = self.spot.clients[DirectoryClient]
@@ -190,6 +218,7 @@ class NetworkComputeClient:
                 name=obj.name,
                 confidence=confidence,
                 bounding_box=bounding_box,
+                image_response=response.image_response,
                 vision_tform_obj=vision_tform_obj,
                 distance=obj_distance
             ))
@@ -198,6 +227,11 @@ class NetworkComputeClient:
         text_x, text_y = 10, annotated_image.shape[0] - 10
         font = cv2.FONT_HERSHEY_SIMPLEX
         cv2.putText(annotated_image, image_source, (text_x, text_y), font, 1, (255, 255, 255), 1)
+
+        # show annotated image if desired
+        if self._cv2_window_name is not None:
+            cv2.imshow(self._cv2_window_name, annotated_image)
+            cv2.waitKey(1)
 
         # output final inference result
         return InferenceResult(
@@ -208,7 +242,7 @@ class NetworkComputeClient:
         )
 
     def perform_360_inspection(self, model_name: str, color_image: bool = True, image_quality: int = 100,
-                               whitelist_labels: list[str] | None = None) -> Generator[InferenceResult, None, None]:
+                               whitelist_labels: list[str] | None = None) -> InferenceResultCollection:
         all_image_sources = [
             SpotImageSource.FRONT_LEFT,
             SpotImageSource.FRONT_RIGHT,
@@ -216,8 +250,12 @@ class NetworkComputeClient:
             SpotImageSource.RIGHT,
             SpotImageSource.BACK
         ]
-        for source in all_image_sources:
-            yield self.perform_inspection(model_name, source, color_image, image_quality, whitelist_labels)
+        return InferenceResultCollection(
+            results=[
+                self.perform_inspection(model_name, source, color_image, image_quality, whitelist_labels)
+                for source in all_image_sources
+            ]
+        )
 
 
 def main() -> None:
@@ -230,7 +268,7 @@ def main() -> None:
     )
 
     start_time = time.time()
-    for inference_result in client.perform_360_inspection('yolov8n'):
+    for inference_result in client.perform_360_inspection('yolov8n').results:
         print(f'Inference result arrived at {time.time() - start_time:.2f}s: {len(inference_result.objects)} objects')
 
 

@@ -1,6 +1,8 @@
+import atexit
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
 import bosdyn.client.common
 import cv2
@@ -18,8 +20,8 @@ from google.protobuf.wrappers_pb2 import StringValue, FloatValue
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from common import rotate_bd_image
-from spot import Spot
+from spot_tools.common import rotate_bd_image
+from spot_tools.spot import Spot
 
 
 @dataclass
@@ -32,6 +34,7 @@ class DirectoryServiceRegistration:
 class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
     def __init__(self, spot: Spot, registration: DirectoryServiceRegistration, models_path: str | Path):
         self._spot = spot
+        self._initial_connection = Event()
 
         directory_client = self._spot.clients[DirectoryClient]
         directory_registration_client = self._spot.clients[DirectoryRegistrationClient]
@@ -63,6 +66,7 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
             port=registration.port
         )
         print('Started NetworkComputeBridgeWorker gRPC server.')
+        atexit.register(self.shutdown)
 
         # transform models_path if necessary
         if isinstance(models_path, str):
@@ -87,6 +91,10 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         # show success message
         print('Successfully established a NetworkComputeServer.')
 
+    def shutdown(self):
+        self._server.stop()
+        print('Stopped NetworkComputeBridgeWorker gRPC server.')
+
     # ---- NetworkComputeBridgeWorkerServicer methods ------------------------------------------------
 
     def NetworkCompute(self, request, context):
@@ -103,6 +111,8 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
 
     def ListAvailableModels(self, request, context):
         print('Got ListAvailableModels request')
+        if not self._initial_connection.is_set():
+            self._initial_connection.set()
         return self._process_list_available_models_request()
 
     # ------------------------------------------------------------------------------------------------
@@ -217,9 +227,12 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         out_proto.status = network_compute_bridge_pb2.NETWORK_COMPUTE_STATUS_SUCCESS
         return out_proto
 
-    def debug_wait_forever(self):
-        self._server.run_until_interrupt()
-        print('Stopped NetworkComputeBridgeWorker gRPC server.')
+    @staticmethod
+    def debug_wait_forever():
+        Event().wait()
+
+    def wait_for_initial_connection(self):
+        self._initial_connection.wait()
 
 
 def main() -> None:

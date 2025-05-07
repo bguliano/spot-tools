@@ -8,7 +8,7 @@ import bosdyn.client
 from bosdyn.api.mission import remote_service_pb2_grpc, remote_pb2
 from bosdyn.client.server_util import ResponseContext
 
-from param_manager import ParamManager
+from spot_tools.param_manager import ParamManager
 
 
 class RMSSkeleton(remote_service_pb2_grpc.RemoteMissionServiceServicer):

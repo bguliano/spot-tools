@@ -6,7 +6,7 @@ from typing import Self
 import cv2
 import numpy as np
 from bosdyn.api.geometry_pb2 import Polygon, SE2VelocityLimit
-from bosdyn.client.math_helpers import SE2Velocity
+from bosdyn.client.math_helpers import SE2Velocity, Vec2
 from bosdyn.client.robot_command import RobotCommandBuilder
 
 
@@ -23,6 +23,9 @@ class Point:
 
     def as_tuple(self) -> tuple[int, int]:
         return self.x, self.y
+
+    def as_vec2(self) -> Vec2:
+        return Vec2(x=self.x, y=self.y)
 
 
 @dataclass
