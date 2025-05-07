@@ -6,8 +6,11 @@ from typing import Self
 import cv2
 import numpy as np
 from bosdyn.api.geometry_pb2 import Polygon, SE2VelocityLimit
+from bosdyn.api.image_pb2 import ImageResponse
+from bosdyn.api.network_compute_bridge_pb2 import NetworkComputeRequest
 from bosdyn.client.math_helpers import SE2Velocity, Vec2
 from bosdyn.client.robot_command import RobotCommandBuilder
+from google.protobuf.wrappers_pb2 import StringValue
 
 
 # ---- Dataclasses -------------------------------------------------------------------------------
@@ -114,6 +117,32 @@ def rotate_bd_image_advanced(image: np.ndarray, image_source_name: str) -> np.nd
 
     elif image_source_name[:5] == "right":
         return cv2.rotate(image, cv2.ROTATE_180)
+
+    return image
+
+
+def process_image_response(image_response: ImageResponse) -> np.ndarray:
+    image = np.frombuffer(image_response.shot.image.data, dtype=np.uint8)
+    image = cv2.imdecode(image, -1)
+    image = rotate_bd_image(image, image_response.source.name)
+    if len(image.shape) == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    return image
+
+
+def process_network_compute_request(request: NetworkComputeRequest) -> np.ndarray:
+    # create image from bytes
+    image = np.frombuffer(request.input_data.image.data, dtype=np.uint8)
+    image = cv2.imdecode(image, -1)
+
+    # image source name is packed in other_data
+    image_source_name = StringValue()
+    request.input_data.other_data.Unpack(image_source_name)
+    image = rotate_bd_image(image, image_source_name.value)
+
+    # convert to RGB if is grayscale
+    if len(image.shape) == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
 
     return image
 

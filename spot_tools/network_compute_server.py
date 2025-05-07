@@ -20,7 +20,7 @@ from google.protobuf.wrappers_pb2 import StringValue, FloatValue
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from spot_tools.common import rotate_bd_image
+from spot_tools.common import rotate_bd_image, process_network_compute_request
 from spot_tools.spot import Spot
 
 
@@ -141,39 +141,8 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         # grab requested model
         current_model = self.models[request.input_data.model_name]
 
-        # unpack the incoming image
-        image = np.frombuffer(request.input_data.image.data, dtype=np.uint8)
-        image = cv2.imdecode(image, -1)
-
-        # ensure image format is supported
-        if request.input_data.image.format == image_pb2.Image.FORMAT_RAW:
-
-            if request.input_data.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_GREYSCALE_U8:
-                # If the input image is grayscale, convert it to RGB.
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-
-            elif request.input_data.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_RGB_U8:
-                # Already an RGB image.
-                pass
-
-            else:
-                print(err_str := f'Image input in unsupported pixel format: {request.input_data.image.pixel_format}')
-                return self._create_error_response(err_str)
-
-        elif request.input_data.image.format == image_pb2.Image.FORMAT_JPEG:
-            if len(image.shape) < 3:
-                # If the input image is grayscale, convert it to RGB.
-                image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-
-        # unsupported image format
-        else:
-            print(err_str := f'Image input in unsupported format: {request.input_data.image.format}')
-            return self._create_error_response(err_str)
-
-        # Approximately rotate the image to level.
-        image_source_name = StringValue()
-        request.input_data.other_data.Unpack(image_source_name)
-        image = rotate_bd_image(image, image_source_name.value)
+        # extract image
+        image = process_network_compute_request(request)
 
         # run prediction
         results: Results = current_model.predict(image)[0].cpu().numpy()

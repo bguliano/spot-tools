@@ -5,11 +5,16 @@ import uuid
 from pathlib import Path
 from typing import TypeVar, Type
 
+import cv2
 import numpy as np
+from bosdyn.api.image_pb2 import Image, ImageRequest
 from bosdyn.client import create_standard_sdk, BaseClient, frame_helpers, math_helpers
+from bosdyn.client.image import ImageClient
 from bosdyn.client.math_helpers import SE3Pose
 from bosdyn.client.robot_command import RobotCommandClient, RobotCommandBuilder, block_until_arm_arrives
 from bosdyn.client.robot_state import RobotStateClient
+
+from spot_tools.common import SpotImageSource, process_image_response
 
 T = TypeVar('T', bound=BaseClient)
 
@@ -124,7 +129,8 @@ class _SpotBody:
     def __init__(self, clients: _SpotClients):
         self._clients = clients
 
-    def compute_stand_location_and_yaw(self, vision_tform_target: SE3Pose, distance_margin: float) -> tuple[tuple[float, float, float], float]:
+    def compute_stand_location_and_yaw(self, vision_tform_target: SE3Pose, distance_margin: float) -> tuple[
+        tuple[float, float, float], float]:
         # grab necessary clients
         robot_state_client = self._clients[RobotStateClient]
 
@@ -170,6 +176,31 @@ class _SpotBody:
         return drop_position_rt_vision, heading_rt_vision
 
 
+class _SpotImage:
+    def __init__(self, clients: _SpotClients):
+        self._clients = clients
+
+    def get_image_from_source(self, image_source: SpotImageSource, color_image: bool = True,
+                              image_quality: int = 100) -> np.ndarray:
+        # grab necessary clients
+        image_client = self._clients[ImageClient]
+
+        # create image request proto
+        pf = Image.PixelFormat.PIXEL_FORMAT_RGB_U8 if color_image else Image.PixelFormat.PIXEL_FORMAT_GREYSCALE_U8
+        image_request = ImageRequest(
+            image_source_name=image_source,
+            image_format=Image.Format.FORMAT_JPEG,
+            pixel_format=pf,
+            quality_percent=image_quality
+        )
+
+        # send request and receive single response
+        image_response = image_client.get_image([image_request])[0]
+
+        # extract image data and process
+        return process_image_response(image_response)
+
+
 class Spot:
     def __init__(self, authentication_file: str | Path, ip: str = '192.168.80.3', client_name: str | None = None):
         self.sdk = create_standard_sdk(client_name or str(uuid.uuid4()))
@@ -184,3 +215,17 @@ class Spot:
         self.gripper = _SpotGripper(self.clients)
         self.arm = _SpotArm(self.clients)
         self.body = _SpotBody(self.clients)
+        self.image = _SpotImage(self.clients)
+
+
+def main() -> None:
+    spot = Spot(
+        authentication_file='../authentication.json'
+    )
+    image = spot.image.get_image_from_source(SpotImageSource.LEFT, color_image=False)
+    cv2.imshow('Spot', image)
+    cv2.waitKey(1)
+
+
+if __name__ == '__main__':
+    main()

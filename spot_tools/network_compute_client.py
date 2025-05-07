@@ -13,7 +13,7 @@ from bosdyn.client.network_compute_bridge_client import NetworkComputeBridgeClie
 from bosdyn.client.robot_state import RobotStateClient
 from google.protobuf.wrappers_pb2 import StringValue, FloatValue
 
-from spot_tools.common import BoundingBox, SpotImageSource, rotate_bd_image, pose_dist
+from spot_tools.common import BoundingBox, SpotImageSource, pose_dist
 from spot_tools.spot import Spot
 
 
@@ -165,11 +165,7 @@ class NetworkComputeClient:
         response = network_compute_bridge_client.network_compute_bridge_command(network_compute_request)
 
         # first, extract image
-        image = np.frombuffer(response.image_response.shot.image.data, dtype=np.uint8)
-        image = cv2.imdecode(image, -1)
-        image = rotate_bd_image(image, image_source)
-        if not color_image:
-            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        image = self.spot.image.process_image_response(response)
 
         # prepare robot transformation state for later calculations
         state = self.spot.clients[RobotStateClient].get_robot_state()
