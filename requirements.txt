@@ -4,4 +4,3 @@ numpy
 protobuf
 mypy-protobuf
 types-protobuf
-ultralytics

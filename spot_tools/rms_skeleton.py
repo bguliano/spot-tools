@@ -156,7 +156,7 @@ class RMSSkeleton(remote_service_pb2_grpc.RemoteMissionServiceServicer):
         # run subclass code before continuing
         self.on_params_requested(request)
 
-        response.custom_params.CopyFrom(self.param_manager.params)
+        response.custom_params.CopyFrom(self.param_manager.spec)
 
     # ----------------- below methods should be overridden by subclass -----------------
 

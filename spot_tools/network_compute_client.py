@@ -1,5 +1,6 @@
 import time
 from dataclasses import dataclass
+from typing import Optional, List
 
 import cv2
 import numpy as np
@@ -28,7 +29,7 @@ class CannotConnectToServerError(Exception):
 @dataclass
 class ModelData:
     name: str
-    labels: list[str]
+    labels: List[str]
 
 
 @dataclass
@@ -39,8 +40,8 @@ class InferenceObject:
     image_response: ImageResponse  # for more fine-grained information
 
     # sometimes these cannot be determined by Spot
-    vision_tform_obj: SE3Pose | None
-    distance: float | None
+    vision_tform_obj: Optional[SE3Pose]
+    distance: Optional[float]
 
 
 @dataclass
@@ -48,24 +49,24 @@ class InferenceResult:
     image_source_name: str
     image: np.ndarray  # rotated
     annotated_image: np.ndarray
-    objects: list[InferenceObject]
+    objects: List[InferenceObject]
 
-    def get_first(self, label: str) -> InferenceObject | None:
+    def get_first(self, label: str) -> Optional[InferenceObject]:
         return next((obj for obj in self.objects if obj.name == label), None)
 
-    def get_closest(self, label: str) -> InferenceObject | None:
+    def get_closest(self, label: str) -> Optional[InferenceObject]:
         matching = (obj for obj in self.objects if obj.name == label)
         return min(matching, key=lambda obj: obj.distance, default=None)
 
 
 @dataclass
 class InferenceResultCollection:
-    results: list[InferenceResult]
+    results: List[InferenceResult]
 
-    def get_first(self, label: str) -> InferenceObject | None:
+    def get_first(self, label: str) -> Optional[InferenceObject]:
         return next((result.get_first(label) for result in self.results), None)
 
-    def get_closest(self, label: str) -> InferenceObject | None:
+    def get_closest(self, label: str) -> Optional[InferenceObject]:
         initial = (result.get_closest(label) for result in self.results)
         return min(initial, key=lambda obj: obj.distance, default=None)
 
@@ -100,7 +101,7 @@ class NetworkComputeClient:
             raise CannotConnectToServerError(f'Cannot connect to {self.service_name}. Please try again.')
 
         # for showing annotated images
-        self._cv2_window_name: str | None = None
+        self._cv2_window_name: Optional[str] = None
 
     def enable_showing_annotated_images(self, window_name: str) -> None:
         self._cv2_window_name = window_name
@@ -114,7 +115,7 @@ class NetworkComputeClient:
         cv2.destroyWindow(self._cv2_window_name)
         self._cv2_window_name = None
 
-    def get_all_servers(self) -> list[str]:
+    def get_all_servers(self) -> List[str]:
         directory_client = self.spot.clients[DirectoryClient]
         dir_list = directory_client.list()
         return [
@@ -123,7 +124,7 @@ class NetworkComputeClient:
             if service.type == 'bosdyn.api.NetworkComputeBridgeWorker'
         ]
 
-    def get_models(self) -> list[ModelData]:
+    def get_models(self) -> List[ModelData]:
         network_compute_client = self.spot.clients[NetworkComputeBridgeClient]
         response = network_compute_client.list_available_models(self.service_name)
         return [
@@ -135,7 +136,7 @@ class NetworkComputeClient:
         ]
 
     def perform_inspection(self, model_name: str, image_source: SpotImageSource, color_image: bool = True,
-                           image_quality: int = 100, whitelist_labels: list[str] | None = None) -> InferenceResult:
+                           image_quality: int = 100, whitelist_labels: Optional[List[str]] = None) -> InferenceResult:
         # generate image request using parameters
         pf = Image.PixelFormat.PIXEL_FORMAT_RGB_U8 if color_image else Image.PixelFormat.PIXEL_FORMAT_GREYSCALE_U8
         image_request = ImageRequest(
@@ -173,7 +174,7 @@ class NetworkComputeClient:
 
         # iterate over each detection
         annotated_image = image.copy()
-        inference_objects: list[InferenceObject] = []
+        inference_objects: List[InferenceObject] = []
         for obj in response.object_in_image:
             # skip if the label is not whitelisted
             if whitelist_labels is not None and obj.name not in whitelist_labels:
@@ -185,7 +186,7 @@ class NetworkComputeClient:
             confidence = conf_proto.value
 
             # calculate bounding box using handy classmethod constructor
-            bounding_box = BoundingBox.from_coordinates(obj.image_properties.coordinates)
+            bounding_box = BoundingBox.from_bosdyn_coordinates(obj.image_properties.coordinates)
 
             # annotate using object_in_image
             annotated_image = _annotate_image(annotated_image, obj.name, confidence, bounding_box)
@@ -238,7 +239,7 @@ class NetworkComputeClient:
         )
 
     def perform_360_inspection(self, model_name: str, color_image: bool = True, image_quality: int = 100,
-                               whitelist_labels: list[str] | None = None) -> InferenceResultCollection:
+                               whitelist_labels: Optional[List[str]] = None) -> InferenceResultCollection:
         all_image_sources = [
             SpotImageSource.FRONT_LEFT,
             SpotImageSource.FRONT_RIGHT,

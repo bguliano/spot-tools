@@ -1,40 +1,59 @@
 import atexit
+import platform
 import traceback
-from dataclasses import dataclass
 from pathlib import Path
 from threading import Event
+from typing import Union
 
 import bosdyn.client.common
 import cv2
 import numpy as np
+import torch
 from bosdyn.api import header_pb2, network_compute_bridge_pb2
-from bosdyn.api import image_pb2
 from bosdyn.api.network_compute_bridge_pb2 import ListAvailableModelsResponse, ModelData, NetworkComputeRequest, \
-    NetworkComputeResponse
+    NetworkComputeResponse, WorkerComputeRequest, WorkerComputeResponse
 from bosdyn.api.network_compute_bridge_service_pb2_grpc import NetworkComputeBridgeWorkerServicer, \
     add_NetworkComputeBridgeWorkerServicer_to_server
 from bosdyn.client.directory import DirectoryClient
 from bosdyn.client.directory_registration import DirectoryRegistrationClient
 from bosdyn.client.server_util import GrpcServiceRunner
-from google.protobuf.wrappers_pb2 import StringValue, FloatValue
+from google.protobuf.wrappers_pb2 import FloatValue
 from ultralytics import YOLO
 from ultralytics.engine.results import Results
 
-from spot_tools.common import rotate_bd_image, process_network_compute_request
+from spot_tools.common import process_network_compute_request, DirectoryServiceRegistration
 from spot_tools.spot import Spot
 
 
-@dataclass
-class DirectoryServiceRegistration:
-    name: str
-    ip: str | None = None
-    port: int = 50051
-
-
 class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
-    def __init__(self, spot: Spot, registration: DirectoryServiceRegistration, models_path: str | Path):
+    def __init__(self, spot: Spot, registration: DirectoryServiceRegistration, models_path: Union[Path, str]):
         self._spot = spot
         self._initial_connection = Event()
+
+        # first, locate all pt files in models_path
+        detected_models = [
+            model_path for model_path in Path(models_path).iterdir()
+            if model_path.suffix == '.pt'
+        ]
+
+        # then, create the actual YOLO models
+        self.models = {
+            model_path.stem: YOLO(model_path)
+            for model_path in detected_models
+        }
+
+        # find appropriate device to run models on
+        if platform.system() == 'Darwin':
+            self.device = 'mps'
+        elif torch.cuda.is_available():
+            self.device = '0'
+        else:
+            self.device = 'cpu'
+
+        # perform first time inference on each model to make sure everything is loaded
+        print('Preloading models...')
+        for model in self.models.values():
+            _ = model.predict(np.zeros((640, 640, 3)), device=self.device)
 
         directory_client = self._spot.clients[DirectoryClient]
         directory_registration_client = self._spot.clients[DirectoryRegistrationClient]
@@ -68,18 +87,6 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         print('Started NetworkComputeBridgeWorker gRPC server.')
         atexit.register(self.shutdown)
 
-        # first, locate all pt files in models_path
-        detected_models = [
-            model_path for model_path in Path(models_path).iterdir()
-            if model_path.suffix == '.pt'
-        ]
-
-        # then, create the actual YOLO models
-        self.models = {
-            model_path.stem: YOLO(model_path).to('mps')
-            for model_path in detected_models
-        }
-
         # print loaded models
         print('Loaded models:')
         print(*(f'\t{i}. {model}' for i, model in enumerate(self.models, 1)), sep='\n')
@@ -103,7 +110,11 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
 
     def WorkerCompute(self, request, context):
         print('Got WorkerCompute request')
-        return self._create_error_response('Not implemented yet.')
+        try:
+            return self._process_worker_compute_request(request)
+        except Exception as e:
+            traceback.print_exception(e)
+            return self._create_error_response('A Python error occurred.')
 
     def ListAvailableModels(self, request, context):
         print('Got ListAvailableModels request')
@@ -145,7 +156,7 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         image = process_network_compute_request(request)
 
         # run prediction
-        results: Results = current_model.predict(image)[0].cpu().numpy()
+        results: Results = current_model.predict(image, device=self.device)[0].cpu().numpy()
         boxes = results.boxes
 
         # iterate through each detection
@@ -192,12 +203,82 @@ class NetworkComputeServer(NetworkComputeBridgeWorkerServicer):
         out_proto.status = network_compute_bridge_pb2.NETWORK_COMPUTE_STATUS_SUCCESS
         return out_proto
 
+    def _process_worker_compute_request(self, request: WorkerComputeRequest) -> WorkerComputeResponse:
+        # create initial response
+        out_proto = NetworkComputeResponse()
+
+        # ensure the model requested is actually loaded
+        if (requested_model_name := request.input_data.parameters.model_name) not in self.models:
+            print(err_str := f'Cannot find model "{requested_model_name}" in loaded models.')
+            return self._create_error_response(err_str)
+
+        # grab requested model
+        current_model = self.models[requested_model_name]
+
+        # extract image
+        if len(request.input_data.images) != 1:
+            print(err_str := f'Expected 1 image, received {len(request.input_data.images)}')
+            return self._create_error_response(err_str)
+        image = np.frombuffer(request.input_data.images[0].shot.image.data, dtype=np.uint8)
+        image = cv2.imdecode(image, -1)
+
+        # run prediction
+        results: Results = current_model.predict(image, device=self.device)[0].cpu().numpy()
+        boxes = results.boxes
+
+        # iterate through each detection
+        # it is easier to use a range since iterating through results produces tensors of len 1
+        for i in range(len(results)):
+            # skip if confidence is lower than requested
+            confidence = float(boxes.conf[i])
+            # needs to be implemented by a custom param spec
+            # if confidence < request.input_data.min_confidence:
+            #     continue
+
+            # get label
+            label_id = int(boxes.cls[i])
+            label = results.names.get(label_id)
+
+            print('Found object with label: "' + label + '" and score: ' + str(confidence))
+
+            # extract coordinates and class of box
+            box_xyxy = boxes.xyxy[i].tolist()
+
+            # create ObjectInImage
+            out_object_in_image = out_proto.object_in_image.add()
+            out_object_in_image.name = label
+
+            # add vertex protos
+            vertex1 = out_object_in_image.image_properties.coordinates.vertexes.add()  # tl
+            vertex1.x = box_xyxy[0]
+            vertex1.y = box_xyxy[1]
+            vertex2 = out_object_in_image.image_properties.coordinates.vertexes.add()  # tr
+            vertex2.x = box_xyxy[2]
+            vertex2.y = box_xyxy[1]
+            vertex3 = out_object_in_image.image_properties.coordinates.vertexes.add()  # br
+            vertex3.x = box_xyxy[2]
+            vertex3.y = box_xyxy[3]
+            vertex4 = out_object_in_image.image_properties.coordinates.vertexes.add()  # bl
+            vertex4.x = box_xyxy[0]
+            vertex4.y = box_xyxy[3]
+
+            # add confidence
+            proto_confidence = FloatValue(value=confidence)
+            out_object_in_image.additional_properties.Pack(proto_confidence)
+
+        print(f'Found {len(results)} object(s)')
+
+        out_proto.status = network_compute_bridge_pb2.NETWORK_COMPUTE_STATUS_SUCCESS
+        return out_proto
+
     @staticmethod
     def debug_wait_forever():
         Event().wait()
 
     def wait_for_initial_connection(self):
+        print('Waiting for Spot to perform initial connection...')
         self._initial_connection.wait()
+        print('Initial connection established.')
 
 
 def main() -> None:

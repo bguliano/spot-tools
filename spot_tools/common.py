@@ -1,9 +1,9 @@
-import math
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Self
+from enum import Enum
+from typing import Union, Tuple
 
 import cv2
+import math
 import numpy as np
 from bosdyn.api.geometry_pb2 import Polygon, SE2VelocityLimit
 from bosdyn.api.image_pb2 import ImageResponse
@@ -11,6 +11,21 @@ from bosdyn.api.network_compute_bridge_pb2 import NetworkComputeRequest
 from bosdyn.client.math_helpers import SE2Velocity, Vec2
 from bosdyn.client.robot_command import RobotCommandBuilder
 from google.protobuf.wrappers_pb2 import StringValue
+
+# part of requirements_full.txt
+try:
+    from ultralytics.engine.results import Results
+except ImportError:
+    pass
+
+
+class StrEnum(str, Enum):
+    def __str__(self):
+        return self.value
+
+    def __format__(self, spec):
+        # so format(member, fmt) == format(member.value, fmt)
+        return format(self.value, spec)
 
 
 # ---- Dataclasses -------------------------------------------------------------------------------
@@ -24,7 +39,7 @@ class Point:
         self.x = int(x)
         self.y = int(y)
 
-    def as_tuple(self) -> tuple[int, int]:
+    def as_tuple(self) -> Tuple[int, int]:
         return self.x, self.y
 
     def as_vec2(self) -> Vec2:
@@ -37,13 +52,21 @@ class BoundingBox:
     br: Point
 
     @classmethod
-    def from_coordinates(cls, coordinates: Polygon) -> Self:
+    def from_bosdyn_coordinates(cls, coordinates: Polygon) -> 'BoundingBox':
         return cls(
             tl=Point(coordinates.vertexes[0].x, coordinates.vertexes[0].y),
             br=Point(coordinates.vertexes[2].x, coordinates.vertexes[2].y)
         )
 
-    def as_tuple(self) -> tuple[int, int, int, int]:
+    @classmethod
+    def from_results(cls, results: 'Results', index: int) -> 'BoundingBox':
+        xyxy = results.boxes[index].xyxy.tolist()
+        return cls(
+            tl=Point(xyxy[0], xyxy[1]),
+            br=Point(xyxy[2], xyxy[3])
+        )
+
+    def as_tuple(self) -> Tuple[int, int, int, int]:
         return self.tl.as_tuple() + self.br.as_tuple()
 
     @property
@@ -67,6 +90,26 @@ class BoundingBox:
     @property
     def max_y(self) -> int:
         return max(self.as_tuple()[1::2])
+
+    @property
+    def tr(self) -> Point:
+        return Point(self.br.x, self.tl.y)
+
+    @property
+    def bl(self) -> Point:
+        return Point(self.tl.x, self.br.y)
+
+    def annotate_image(self, image: np.ndarray, caption: str, color: Tuple[int, int, int], font_scale: int,
+                       thickness: int):
+        cv2.rectangle(image, self.tl.as_tuple(), self.br.as_tuple(), color, thickness)
+        cv2.putText(image, caption, (self.min_x, self.max_y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, color, thickness)
+
+
+@dataclass
+class DirectoryServiceRegistration:
+    name: str
+    ip: Union[str, None] = None
+    port: int = 50051
 
 
 # ------------------------------------------------------------------------------------------------
@@ -158,5 +201,10 @@ def get_walking_params(max_linear_vel: float, max_rotation_vel: float):
     params = RobotCommandBuilder.mobility_params()
     params.vel_limit.CopyFrom(vel_limit)
     return params
+
+
+def encode_to_jpeg(image: np.ndarray, quality: int = 80) -> bytes:
+    _, buffer = cv2.imencode('.jpg', image, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
+    return buffer.tobytes()
 
 # ------------------------------------------------------------------------------------------------

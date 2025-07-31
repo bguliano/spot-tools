@@ -1,11 +1,13 @@
 import logging
 from dataclasses import dataclass
-from typing import Optional, Union, Iterable, Type, Dict, Any
+from typing import Optional, Iterable, Type, Dict, Any
 
 from bosdyn.api import service_customization_pb2
 from bosdyn.api.units_pb2 import Units
 from bosdyn.client.service_customization_helpers import validate_dict_spec, InvalidCustomParamSpecError
 from google.protobuf.wrappers_pb2 import Int64Value, BoolValue
+
+SpotParams = Dict[str, Any]
 
 
 @dataclass
@@ -93,7 +95,7 @@ def load_specs(params: Iterable, *, onto_spec) -> Dict[str, Type]:
         found_keys_to_param_type[param.key] = type(param)
 
         # create spec objects
-        if isinstance(param, Union[DictParam, OneOfParam]):
+        if isinstance(param, DictParam) or isinstance(param, OneOfParam):
             spec = param.spec
             found_keys_to_param_type.update(param.keys_to_param_type)
 
@@ -185,18 +187,18 @@ class OneOfParam(ParamInfoExt):
 class ParamManager:
     def __init__(self, *, logger: Optional[logging.Logger] = None):
         self.logger = logger or logging.getLogger(__name__)
-        self.params = service_customization_pb2.DictParam.Spec()
+        self.spec = service_customization_pb2.DictParam.Spec()
         self.keys_to_param_type: Dict[str, Type] = {}
 
     def add_params(self, *args):
-        all_keys = load_specs(args, onto_spec=self.params)
+        all_keys = load_specs(args, onto_spec=self.spec)
         self.keys_to_param_type.update(all_keys)
         self._validate()
 
-    def parse_request_params(self, request) -> Dict[str, Any]:
+    def parse_request_params(self, request_or_dict_param) -> SpotParams:
 
         # recursively parse every param, looking for their values
-        def scan_container_param(param) -> Dict[str, Any]:
+        def scan_container_param(param) -> SpotParams:
             results = {}
             custom_param_dict = param.values
             for child_key, child_param in custom_param_dict.items():
@@ -219,13 +221,16 @@ class ParamManager:
                     results[child_key] = correct_param.key
             return results
 
-        return scan_container_param(request.params)
+        if isinstance(request_or_dict_param, service_customization_pb2.DictParam):
+            return scan_container_param(request_or_dict_param)
+        else:
+            return scan_container_param(request_or_dict_param.spec)
 
     def _validate(self):
         try:
-            validate_dict_spec(self.params)
+            validate_dict_spec(self.spec)
         except InvalidCustomParamSpecError:
             self.logger.exception(f'Custom params failed validation')
             # clear the custom parameters if they are invalid
-            self.params.Clear()
+            self.spec.Clear()
             self.keys_to_param_type.clear()
